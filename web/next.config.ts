@@ -4,7 +4,7 @@ import type { NextConfig } from "next";
 // rewrite here, so the shared API key can be attached server-side. See
 // web/lib/api-key.ts.
 const nextConfig: NextConfig = {
-  output: "standalone",
+  ...(process.env.DOCKER_BUILD ? { output: "standalone" } : {}),
 };
 
 export default nextConfig;

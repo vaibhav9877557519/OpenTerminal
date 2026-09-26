@@ -7,8 +7,11 @@ const NAMES: Record<string, string> = {
   DOTUSDT: "Polkadot", LINKUSDT: "Chainlink", LTCUSDT: "Litecoin", MATICUSDT: "Polygon",
 };
 
-/** Plain tickers (BTC, ETH, ...) this app treats as crypto for routing quotes/history. */
-export const CRYPTO_SYMBOLS = new Set(Object.keys(NAMES).map((s) => s.replace("USDT", "")));
+/** Plain tickers (BTC, ETH, ...) and pairs (BTCUSDT) this app treats as crypto for routing quotes/history. */
+export const CRYPTO_SYMBOLS = new Set([
+  ...Object.keys(NAMES),
+  ...Object.keys(NAMES).map((s) => s.replace("USDT", "")),
+]);
 
 /** Fallback crypto board built from Binance public 24hr tickers (no key required). */
 export async function markets(): Promise<CryptoRow[]> {
@@ -34,8 +37,9 @@ export async function markets(): Promise<CryptoRow[]> {
 }
 
 export async function orderBook(symbol: string, limit = 20): Promise<{ bids: [string, string][]; asks: [string, string][] }> {
-  const pair = encodeURIComponent(symbol.toUpperCase() + "USDT");
-  const res = await fetch(`https://api.binance.com/api/v3/depth?symbol=${pair}&limit=${limit}`);
+  const clean = symbol.toUpperCase().replace(/[\/\s_-]/g, "");
+  const pair = clean.endsWith("USDT") ? clean : clean + "USDT";
+  const res = await fetch(`https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(pair)}&limit=${limit}`);
   if (!res.ok) throw new Error(`binance ${res.status}`);
   const d = await res.json();
   return { bids: d.bids ?? [], asks: d.asks ?? [] };
@@ -43,7 +47,8 @@ export async function orderBook(symbol: string, limit = 20): Promise<{ bids: [st
 
 /** Single-symbol quote so crypto tickers can flow through the same /api/quotes path as stocks. */
 export async function quote(symbol: string): Promise<Quote> {
-  const pair = symbol.toUpperCase() + "USDT";
+  const clean = symbol.toUpperCase().replace(/[\/\s_-]/g, "");
+  const pair = clean.endsWith("USDT") ? clean : clean + "USDT";
   const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${encodeURIComponent(pair)}`);
   if (!res.ok) throw new Error(`binance ticker ${res.status}`);
   const d = await res.json();
@@ -69,7 +74,7 @@ export async function quote(symbol: string): Promise<Quote> {
     week52Low: null,
     beta: null,
     sharesOutstanding: null,
-    currency: "USD",
+    currency: "USDT",
     exchange: "Binance",
     marketState: "Open",
     time: null,
@@ -90,7 +95,8 @@ const RANGE_TO_KLINE: Record<string, { interval: string; limit: number }> = {
 
 export async function history(symbol: string, rangeKey: string): Promise<Candle[]> {
   const { interval, limit } = RANGE_TO_KLINE[rangeKey] ?? RANGE_TO_KLINE["6M"];
-  const pair = symbol.toUpperCase() + "USDT";
+  const clean = symbol.toUpperCase().replace(/[\/\s_-]/g, "");
+  const pair = clean.endsWith("USDT") ? clean : clean + "USDT";
   const res = await fetch(
     `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(pair)}&interval=${interval}&limit=${limit}`
   );

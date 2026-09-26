@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import express from "express";
 import cors from "cors";
 import { marketRouter } from "./routes/market.js";
@@ -6,6 +8,29 @@ import { aiRouter } from "./routes/ai.js";
 import { allStats } from "./providers/registry.js";
 import { requireApiKey } from "./auth.js";
 import { rateLimit } from "./rateLimit.js";
+import { MarketStreamServer } from "./websocket.js";
+
+// Load .env automatically from project root or server dir
+try {
+  const envPath = path.resolve(process.cwd(), ".env");
+  const parentEnvPath = path.resolve(process.cwd(), "..", ".env");
+  const pathToRead = fs.existsSync(envPath) ? envPath : fs.existsSync(parentEnvPath) ? parentEnvPath : null;
+  if (pathToRead) {
+    const lines = fs.readFileSync(pathToRead, "utf8").split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith("#") && trimmed.includes("=")) {
+        const [k, ...v] = trimmed.split("=");
+        const key = k.trim();
+        if (!process.env[key]) {
+          process.env[key] = v.join("=").trim();
+        }
+      }
+    }
+  }
+} catch {
+  // best effort
+}
 
 const app = express();
 
@@ -58,6 +83,10 @@ const PORT = Number(process.env.API_PORT ?? 4000);
 // unauthenticated-by-default API to the network. Set API_HOST=0.0.0.0 (and
 // API_KEY + WEB_ORIGIN) to intentionally expose it beyond this machine.
 const HOST = process.env.API_HOST ?? "127.0.0.1";
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`OpenTerminal API listening on http://${HOST}:${PORT}`);
+  console.log(`OpenTerminal WebSocket streaming listening on ws://${HOST}:${PORT}/ws`);
 });
+
+export const streamServer = new MarketStreamServer(server);
+

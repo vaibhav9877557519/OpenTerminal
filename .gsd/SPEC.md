@@ -1,41 +1,44 @@
-# OpenTerminal Local Installation & Automation Specification
+# OpenTerminal Upgrade: Global Market Research & Trading Terminal Specification
 
-## 1. Overview & Objective
-Establish a permanent, robust, production-grade local installation of OpenTerminal on Windows (PC).
-Repository: `https://github.com/ErTasselli/OpenTerminal`
-Target Location: `C:\Users\LENOVO\OneDrive\Documents\My Projects\OpenTerminal`
+## 1. Objective
+Transform OpenTerminal into a professional multi-asset research and trading terminal supporting:
+- Indian Markets (NSE/BSE equities, NIFTY 50, BANK NIFTY, Sector indices, India VIX, F&O Option Chains) via Upstox API v2/v3.
+- Global Forex (Majors, Crosses, USD/INR, Bid/Ask/Spread, Tick Volume, Currency Strength Meter) via Finnhub & Yahoo Finance.
+- US Equities, Global Indices (S&P 500, Nasdaq, Dow, FTSE, DAX, Nikkei) & Crypto (Binance/CoinGecko).
+- Real-time WebSocket streaming architecture with incremental live candle updates.
+- Real observed Latency Monitor and Data Quality Engine (LIVE, DELAYED, STALE, UNAVAILABLE).
+- Professional TradingView-class charting experience using lightweight-charts:
+  - Chart Types: Candlestick, Bar/OHLC, Line, Area, Baseline, Heikin Ashi.
+  - Complete timeframes (1m -> 1M) and ranges (1D -> MAX).
+  - Configurable multiple EMAs/SMAs, VWAP, Bollinger, RSI, MACD, ATR, Stochastic, ADX, OBV.
+  - Interactive Drawing Tools (Trend lines, Horiz/Vert lines, Rays, Rectangles, Fibonacci Retracement, Measure).
+  - Optional Automated Pattern Recognition (Reversals, Continuations, Candlestick patterns).
+  - Multi-Timeframe (MTF) trend summary.
+  - Local Alerts system & Saved Chart Layouts.
+- Unified Global Search and Provider Router.
 
-The installation must:
-1. Have all backend and frontend dependencies installed cleanly.
-2. Build and run without errors.
-3. Be fully launchable via `START.bat` (and Desktop shortcut) which starts backend & frontend, waits for readiness, opens Google Chrome at `http://localhost:3000`, avoids duplicate processes, and handles errors.
-4. Have a reliable `STOP.bat` to gracefully terminate processes on ports 3000 and 4000.
-5. Provide a desktop shortcut `OpenTerminal.lnk` pointing to `START.bat`.
-6. Provide an optional Windows Startup configuration/script.
-7. Address OneDrive sync interference with `node_modules` and SQLite database (`terminal.db`, WAL/SHM).
-8. Bind strictly to `127.0.0.1` / `localhost` for security.
-9. Support full local data without required external paid API keys, with optional Anthropic Claude integration.
+## 2. Constraints & Security
+- NEVER hard-code credentials in frontend code or commit to Git.
+- Store `UPSTOX_ACCESS_TOKEN` and `FINNHUB_API_KEY` strictly in backend `.env`.
+- No scraping of TradingView, no unauthorized TradingView APIs, no fake data.
+- HFTENGINE must NOT be touched or integrated.
+- Preserve working START.bat, STOP.bat, and local bindings (127.0.0.1:4000 & localhost:3000).
 
-## 2. Technical Stack & Architecture
-- **Runtime**: Node.js v26.8.1, npm 11.19.0, Python 3.14/3.13, Windows 11 / PowerShell / cmd.exe.
-- **Backend (`server/`)**: Express.js, TypeScript, better-sqlite3 (`terminal.db` in `data/`), cors, zod, @anthropic-ai/sdk. Listens on `http://127.0.0.1:4000`.
-- **Frontend (`web/`)**: Next.js 15, React 19, Tailwind CSS v4, Zustand, Lightweight Charts. Proxies API requests to `http://localhost:4000`. Listens on `http://localhost:3000`.
-- **Database**: SQLite WAL mode located at `data/terminal.db`.
-- **Browser**: Google Chrome at `C:\Program Files\Google\Chrome\Application\chrome.exe`.
-
-## 3. OneDrive Safety Considerations
-Because `C:\Users\LENOVO\OneDrive\Documents\My Projects\OpenTerminal` is managed under OneDrive:
-- `node_modules/` (thousands of tiny files) can cause OneDrive sync thrashing.
-- SQLite WAL mode files (`data/terminal.db-wal`, `data/terminal.db-shm`) can lock or conflict if synced actively during runtime.
-- Solution: Configure OneDrive ignore attributes (`attrib +U -P` or `Set-Content -Path ... -Stream ...` or OneDrive exclude list guidance), and ensure clean shutdown.
-
-## 4. Verification Criteria
-- [ ] Dependencies installed cleanly across root, `server`, and `web`.
-- [ ] TypeScript build for `server` succeeds (`npm run build -w server`).
-- [ ] Next.js build or dev mode for `web` succeeds (`npm run build -w web`).
-- [ ] API status endpoint `http://127.0.0.1:4000/api/status` returns `{"ok":true,...}`.
-- [ ] Web frontend at `http://localhost:3000` renders OpenTerminal dashboard.
-- [ ] `START.bat` executes cleanly, detects duplicate runs, waits for readiness, launches Chrome.
-- [ ] `STOP.bat` cleanly shuts down all background processes on ports 3000 and 4000.
-- [ ] Desktop shortcut exists and points to `START.bat`.
-- [ ] Empirical proof captured and documented.
+## 3. Architecture
+```
+[Provider WS / REST]
+  ├── Upstox (NSE/BSE, Indices, Options, Feeder WS)
+  ├── Finnhub (US Stocks, Forex pairs, WS)
+  ├── Crypto (Binance/CoinGecko)
+  └── Yahoo/Nasdaq/FRED/ECB (Fallbacks & Macro)
+            ↓
+    [Provider Router & Normalizer]
+            ↓
+    [Data Quality & Latency Engine]
+            ↓
+    [Backend WebSocket Server (ws://localhost:4000/ws)]
+            ↓
+    [Frontend useMarketStream Hook]
+            ↓
+    [TradingView-Class Lightweight Chart & Widgets]
+```

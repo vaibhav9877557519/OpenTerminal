@@ -13,6 +13,11 @@ import * as news from "../providers/news.js";
 import * as econcalendar from "../providers/econcalendar.js";
 import * as finra from "../providers/finra.js";
 import * as secedgar from "../providers/secedgar.js";
+import * as router from "../providers/router.js";
+import * as upstox from "../providers/upstox.js";
+import * as indices from "../providers/indices.js";
+import * as forex from "../providers/forex.js";
+import type { NormalizedQuote } from "../providers/types.js";
 
 export const marketRouter = Router();
 
@@ -110,6 +115,41 @@ async function vixHistory(rangeKey: string): Promise<yahoo.Candle[]> {
  * TradingView call. Repetition beyond that is bounded by marketRouter's
  * per-IP rate limit (see index.ts).
  */
+export function normalizedToQuote(q: NormalizedQuote): yahoo.Quote & { assetType?: string; status?: string; latencyMs?: number; tickVolume?: number } {
+  return {
+    symbol: q.symbol,
+    name: q.name,
+    price: q.price,
+    change: q.change,
+    changePercent: q.changePercent,
+    open: q.open,
+    high: q.high,
+    low: q.low,
+    previousClose: q.previousClose,
+    bid: q.bid,
+    ask: q.ask,
+    volume: q.volume,
+    avgVolume: null,
+    marketCap: q.marketCap ?? null,
+    pe: q.pe ?? null,
+    eps: q.eps ?? null,
+    dividendYield: q.dividendYield ?? null,
+    week52High: null,
+    week52Low: null,
+    beta: null,
+    sharesOutstanding: null,
+    currency: q.currency ?? "USD",
+    exchange: q.exchange ?? "UNKNOWN",
+    marketState: q.status ?? null,
+    time: Math.floor(q.timestamp / 1000),
+    source: q.source,
+    assetType: q.assetType,
+    status: q.status,
+    latencyMs: q.feedLatencyMs ?? undefined,
+    tickVolume: q.tickVolume ?? undefined,
+  };
+}
+
 const FALLBACK_PER_SYMBOL_CAP = 20;
 async function getQuotes(symbols: string[]): Promise<yahoo.Quote[]> {
   const fresh = new Map<string, yahoo.Quote>();
@@ -124,6 +164,22 @@ async function getQuotes(symbols: string[]): Promise<yahoo.Quote[]> {
   const fetched = new Map<string, yahoo.Quote>();
   let remaining = missing;
 
+  // 1. Check Indian, Forex, or Global Indices via universal router
+  const multiAssetSymbols = remaining.filter((s) => {
+    const cat = router.detectProviderCategory(s);
+    return cat === "upstox" || cat === "forex" || cat === "indices" || s.startsWith("NSE_") || s.startsWith("BSE_");
+  });
+  if (multiAssetSymbols.length > 0) {
+    const results = await Promise.allSettled(multiAssetSymbols.map((s) => router.getQuote(s)));
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled" && r.value) {
+        fetched.set(multiAssetSymbols[i], normalizedToQuote(r.value));
+      }
+    });
+    remaining = remaining.filter((s) => !fetched.has(s));
+  }
+
+  // 2. Check Crypto via Binance
   const cryptoSymbols = remaining.filter((s) => binance.CRYPTO_SYMBOLS.has(s));
   if (cryptoSymbols.length > 0) {
     const results = await Promise.allSettled(cryptoSymbols.map((s) => binance.quote(s)));
@@ -133,6 +189,7 @@ async function getQuotes(symbols: string[]): Promise<yahoo.Quote[]> {
     remaining = remaining.filter((s) => !fetched.has(s));
   }
 
+  // 3. VIX
   const vixSymbols = remaining.filter((s) => isVix(s));
   if (vixSymbols.length > 0) {
     const results = await Promise.allSettled(vixSymbols.map(() => vixQuote()));
@@ -142,12 +199,14 @@ async function getQuotes(symbols: string[]): Promise<yahoo.Quote[]> {
     remaining = remaining.filter((s) => !fetched.has(s));
   }
 
+  // 4. US Stocks: Nasdaq quote
   const nasdaqResults = await Promise.allSettled(remaining.map((s) => nasdaq.quote(s)));
   nasdaqResults.forEach((r, i) => {
     if (r.status === "fulfilled") fetched.set(remaining[i], r.value);
   });
   remaining = remaining.filter((s) => !fetched.has(s));
 
+  // 5. Yahoo quotes batch
   if (remaining.length > 0) {
     try {
       const rows = await yahoo.quotes(remaining);
@@ -173,11 +232,20 @@ async function getQuotes(symbols: string[]): Promise<yahoo.Quote[]> {
     results.forEach((r, i) => {
       if (r.status === "fulfilled") fetched.set(batch[i], r.value);
     });
+    remaining = remaining.filter((s) => !fetched.has(s));
   }
 
-  // Fill gaps Nasdaq's quote endpoints don't cover (open, P/E, EPS, dividend
-  // yield, beta, shares outstanding) from TradingView's public scanner API,
-  // in one batched request for every quote that resolved an exchange.
+  // 6. Last effort fallback to router for anything unresolved
+  if (remaining.length > 0) {
+    const routerAttempts = await Promise.allSettled(remaining.map((s) => router.getQuote(s)));
+    routerAttempts.forEach((r, i) => {
+      if (r.status === "fulfilled" && r.value) {
+        fetched.set(remaining[i], normalizedToQuote(r.value));
+      }
+    });
+  }
+
+  // Fill gaps from TradingView fundamentals
   const needsFundamentals = [...fetched.values()].filter((q) => q.exchange && q.pe === null);
   if (needsFundamentals.length > 0) {
     try {
@@ -195,7 +263,7 @@ async function getQuotes(symbols: string[]): Promise<yahoo.Quote[]> {
         q.sharesOutstanding = q.sharesOutstanding ?? f.sharesOutstanding;
       }
     } catch {
-      // best-effort enrichment only — never fails the quote request
+      // best-effort enrichment only
     }
   }
 
@@ -208,6 +276,16 @@ async function getQuotes(symbols: string[]): Promise<yahoo.Quote[]> {
   }
   return out;
 }
+
+marketRouter.get(["/quote/:symbol", "/quote/*"], async (req, res) => {
+  const symbol = (req.params as any)[0] || req.params.symbol;
+  try {
+    const q = await router.getQuote(symbol);
+    res.json(q);
+  } catch (err) {
+    fail(req, res, err);
+  }
+});
 
 marketRouter.get("/quotes", async (req, res) => {
   const symbols = String(req.query.symbols ?? "")
@@ -227,21 +305,32 @@ marketRouter.get("/quotes", async (req, res) => {
 
 // ---- history / candles ----
 
-marketRouter.get("/history/:symbol", async (req, res) => {
-  const symbol = req.params.symbol.toUpperCase();
+marketRouter.get(["/history/:symbol", "/history/*"], async (req, res) => {
+  const raw = (req.params as any)[0] || req.params.symbol;
+  const symbol = String(raw).trim();
   const rangeKey = String(req.query.range ?? "6M");
+  const interval = req.query.interval ? String(req.query.interval) : undefined;
   try {
-    const data = await cached(`history:${symbol}:${rangeKey}`, HISTORY_TTL, () =>
-      binance.CRYPTO_SYMBOLS.has(symbol)
-        ? binance.history(symbol, rangeKey)
-        : isVix(symbol)
-        ? vixHistory(rangeKey)
-        : withFallback([
-            ["nasdaq", () => nasdaq.history(symbol, rangeKey)],
-            ["yahoo", () => yahoo.history(symbol, yahooRange(rangeKey).range, yahooRange(rangeKey).interval)],
-            ["stooq", () => stooq.history(symbol)],
-          ])
-    );
+    const data = await cached(`history:${symbol}:${rangeKey}:${interval ?? "default"}`, HISTORY_TTL, async () => {
+      const category = router.detectProviderCategory(symbol);
+      if (category !== "us_stock" || symbol.includes("^") || symbol.includes("=") || isVix(symbol)) {
+        const normCandles = await router.getHistory(symbol, rangeKey);
+        return normCandles.map((c) => ({
+          time: c.time,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+          tickVolume: c.tickVolume,
+        }));
+      }
+      return withFallback([
+        ["nasdaq", () => nasdaq.history(symbol, rangeKey)],
+        ["yahoo", () => yahoo.history(symbol, yahooRange(rangeKey).range, yahooRange(rangeKey).interval)],
+        ["stooq", () => stooq.history(symbol)],
+      ]);
+    });
     if (!Array.isArray(data) || data.length === 0) throw new Error("empty history from all providers");
     res.json(data);
   } catch (err) {
@@ -269,12 +358,29 @@ marketRouter.get("/search", async (req, res) => {
   const q = String(req.query.q ?? "").trim();
   if (!q) return res.json([]);
   try {
-    const data = await cached(`search:${q.toLowerCase()}`, 300_000, () =>
-      withFallback([
-        ["tradingview", () => tradingview.search(q)],
-        ["yahoo", () => yahoo.search(q)],
-      ])
-    );
+    const data = await cached(`search:${q.toLowerCase()}`, 120_000, async () => {
+      return router.universalSearch(q);
+    });
+    res.json(data);
+  } catch (err) {
+    fail(req, res, err);
+  }
+});
+
+// ---- indices & forex strength ----
+
+marketRouter.get("/indices", async (req, res) => {
+  try {
+    const data = await cached("indices:all", 10_000, () => indices.allIndices());
+    res.json(data);
+  } catch (err) {
+    fail(req, res, err);
+  }
+});
+
+marketRouter.get("/forex/strength", async (req, res) => {
+  try {
+    const data = await cached("forex:strength", 60_000, () => forex.calculateCurrencyStrength());
     res.json(data);
   } catch (err) {
     fail(req, res, err);
@@ -320,10 +426,44 @@ marketRouter.get("/econ-calendar", async (req, res) => {
 
 // ---- options ----
 
-marketRouter.get("/options/:symbol", async (req, res) => {
-  const symbol = req.params.symbol.toUpperCase();
+marketRouter.get(["/options/:symbol", "/options/*"], async (req, res) => {
+  const raw = (req.params as any)[0] || req.params.symbol;
+  const symbol = String(raw).toUpperCase();
   const expiry = req.query.expiry ? String(req.query.expiry) : undefined;
   try {
+    if (upstox.resolveIndianInstrument(symbol) || symbol.startsWith("NSE_") || symbol.includes("NIFTY")) {
+      const chain = await cached(`options:in:${symbol}:${expiry ?? "front"}`, 30_000, () =>
+        upstox.optionChain(symbol, expiry)
+      );
+      return res.json({
+        symbol: chain.symbol,
+        underlyingPrice: chain.underlyingPrice,
+        expirationDates: chain.availableExpiries,
+        selectedDate: chain.selectedExpiry,
+        calls: chain.strikes.map((s) => ({
+          strike: s.strikePrice,
+          lastPrice: s.call?.ltp ?? null,
+          bid: s.call?.bid ?? null,
+          ask: s.call?.ask ?? null,
+          volume: s.call?.volume ?? null,
+          openInterest: s.call?.oi ?? null,
+          impliedVolatility: s.call?.greeks?.iv ?? null,
+          inTheMoney: chain.underlyingPrice ? s.strikePrice < chain.underlyingPrice : false,
+        })),
+        puts: chain.strikes.map((s) => ({
+          strike: s.strikePrice,
+          lastPrice: s.put?.ltp ?? null,
+          bid: s.put?.bid ?? null,
+          ask: s.put?.ask ?? null,
+          volume: s.put?.volume ?? null,
+          openInterest: s.put?.oi ?? null,
+          impliedVolatility: s.put?.greeks?.iv ?? null,
+          inTheMoney: chain.underlyingPrice ? s.strikePrice > chain.underlyingPrice : false,
+        })),
+        strikes: chain.strikes,
+      });
+    }
+
     const data = await cached(`options:${symbol}:${expiry ?? "front"}`, 60_000, () =>
       withFallback([
         ["nasdaq", () => nasdaq.optionChain(symbol, expiry)],

@@ -18,6 +18,8 @@ const ITEMS: Array<{ type: WidgetType; label: string; key: string }> = [
   { type: "insider", label: "INSIDER", key: "" },
   { type: "tv", label: "LIVE TV", key: "" },
   { type: "recap", label: "MARKET RECAP", key: "" },
+  { type: "indices", label: "GLOBAL INDICES", key: "" },
+  { type: "currency", label: "FX STRENGTH", key: "" },
 ];
 
 export default function Sidebar() {

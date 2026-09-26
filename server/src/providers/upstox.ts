@@ -241,7 +241,37 @@ function formatUpstoxDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-export async function history(symbol: string, rangeKey = "6M"): Promise<NormalizedCandle[]> {
+function aggregateCandles(candles: NormalizedCandle[], bucketSeconds: number): NormalizedCandle[] {
+  if (candles.length === 0 || bucketSeconds <= 0) return candles;
+  const map = new Map<number, NormalizedCandle>();
+
+  for (const c of candles) {
+    const bucket = Math.floor(c.time / bucketSeconds) * bucketSeconds;
+    const existing = map.get(bucket);
+    if (!existing) {
+      map.set(bucket, {
+        time: bucket,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        tickVolume: c.tickVolume,
+        source: c.source,
+        assetType: c.assetType,
+      });
+    } else {
+      existing.high = Math.max(existing.high, c.high);
+      existing.low = Math.min(existing.low, c.low);
+      existing.close = c.close;
+      existing.volume = (existing.volume ?? 0) + (c.volume ?? 0);
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) => a.time - b.time);
+}
+
+export async function history(symbol: string, rangeKey = "6M", customInterval?: string): Promise<NormalizedCandle[]> {
   return tracked("upstox", async () => {
     const inst = resolveIndianInstrument(symbol);
     if (!inst) throw new Error(`Unknown Indian instrument: ${symbol}`);
@@ -250,22 +280,89 @@ export async function history(symbol: string, rangeKey = "6M"): Promise<Normaliz
     const toDate = formatUpstoxDate(now);
     let fromDate = formatUpstoxDate(new Date(now.getTime() - 180 * 86400 * 1000));
     let interval = "day";
+    let aggregateSec = 0;
 
-    if (rangeKey === "1D") {
-      fromDate = formatUpstoxDate(new Date(now.getTime() - 2 * 86400 * 1000));
-      interval = "30minute";
-    } else if (rangeKey === "5D") {
-      fromDate = formatUpstoxDate(new Date(now.getTime() - 7 * 86400 * 1000));
-      interval = "30minute";
-    } else if (rangeKey === "1M") {
-      fromDate = formatUpstoxDate(new Date(now.getTime() - 35 * 86400 * 1000));
-      interval = "day";
-    } else if (rangeKey === "1Y") {
-      fromDate = formatUpstoxDate(new Date(now.getTime() - 365 * 86400 * 1000));
-      interval = "day";
-    } else if (rangeKey === "5Y" || rangeKey === "MAX") {
-      fromDate = formatUpstoxDate(new Date(now.getTime() - 1825 * 86400 * 1000));
-      interval = "week";
+    if (customInterval) {
+      const ci = customInterval.toLowerCase();
+      switch (ci) {
+        case "1m":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 5 * 86400 * 1000));
+          interval = "1minute";
+          break;
+        case "3m":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 7 * 86400 * 1000));
+          interval = "1minute";
+          aggregateSec = 180;
+          break;
+        case "5m":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 10 * 86400 * 1000));
+          interval = "1minute";
+          aggregateSec = 300;
+          break;
+        case "15m":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 20 * 86400 * 1000));
+          interval = "1minute";
+          aggregateSec = 900;
+          break;
+        case "30m":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 60 * 86400 * 1000));
+          interval = "30minute";
+          break;
+        case "45m":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 20 * 86400 * 1000));
+          interval = "1minute";
+          aggregateSec = 2700;
+          break;
+        case "1h":
+        case "60m":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 90 * 86400 * 1000));
+          interval = "30minute";
+          aggregateSec = 3600;
+          break;
+        case "2h":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 120 * 86400 * 1000));
+          interval = "30minute";
+          aggregateSec = 7200;
+          break;
+        case "4h":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 180 * 86400 * 1000));
+          interval = "30minute";
+          aggregateSec = 14400;
+          break;
+        case "1d":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 365 * 86400 * 1000));
+          interval = "day";
+          break;
+        case "1w":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 1825 * 86400 * 1000));
+          interval = "week";
+          break;
+        case "1m_month":
+        case "1mo":
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 3650 * 86400 * 1000));
+          interval = "month";
+          break;
+        default:
+          fromDate = formatUpstoxDate(new Date(now.getTime() - 365 * 86400 * 1000));
+          interval = "day";
+      }
+    } else {
+      if (rangeKey === "1D") {
+        fromDate = formatUpstoxDate(new Date(now.getTime() - 2 * 86400 * 1000));
+        interval = "30minute";
+      } else if (rangeKey === "5D") {
+        fromDate = formatUpstoxDate(new Date(now.getTime() - 7 * 86400 * 1000));
+        interval = "30minute";
+      } else if (rangeKey === "1M") {
+        fromDate = formatUpstoxDate(new Date(now.getTime() - 35 * 86400 * 1000));
+        interval = "day";
+      } else if (rangeKey === "1Y") {
+        fromDate = formatUpstoxDate(new Date(now.getTime() - 365 * 86400 * 1000));
+        interval = "day";
+      } else if (rangeKey === "5Y" || rangeKey === "MAX") {
+        fromDate = formatUpstoxDate(new Date(now.getTime() - 1825 * 86400 * 1000));
+        interval = "week";
+      }
     }
 
     const url = `${UPSTOX_BASE}/v2/historical-candle/${encodeURIComponent(inst.instrumentKey)}/${interval}/${toDate}/${fromDate}`;
@@ -278,6 +375,7 @@ export async function history(symbol: string, rangeKey = "6M"): Promise<Normaliz
     const json = (await res.json()) as any;
     const rawCandles = json.data?.candles;
     if (!Array.isArray(rawCandles)) return [];
+
 
     // Upstox candle format: [timestamp_str, open, high, low, close, volume, open_interest]
     // Raw candles arrive sorted descending (newest first); lightweight-charts needs ascending
@@ -305,7 +403,8 @@ export async function history(symbol: string, rangeKey = "6M"): Promise<Normaliz
       };
     });
 
-    return candles.sort((a, b) => a.time - b.time);
+    const sorted = candles.sort((a, b) => a.time - b.time);
+    return aggregateSec > 0 ? aggregateCandles(sorted, aggregateSec) : sorted;
   });
 }
 

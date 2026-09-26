@@ -24,6 +24,59 @@ interface ClientSubscription {
   symbols: Set<string>;
 }
 
+export function getMarketTradingStatus(symbol: string): { status: "LIVE" | "CLOSED"; note?: string } {
+  const cat = detectProviderCategory(symbol);
+  const now = new Date();
+  const dayOfWeek = now.getUTCDay(); // 0 is Sunday, 6 is Saturday
+  const utcHours = now.getUTCHours();
+  const utcMins = now.getUTCMinutes();
+  const utcTotal = utcHours * 60 + utcMins;
+
+  if (cat === "crypto") {
+    return { status: "LIVE", note: "Crypto trades 24/7 in real-time" };
+  }
+
+  if (cat === "forex") {
+    // Forex closes Friday 21:00 UTC (5 PM EST) and opens Sunday 21:00 UTC
+    const isFridayAfterClose = dayOfWeek === 5 && utcTotal >= 21 * 60;
+    const isSaturday = dayOfWeek === 6;
+    const isSundayBeforeOpen = dayOfWeek === 0 && utcTotal < 21 * 60;
+    if (isFridayAfterClose || isSaturday || isSundayBeforeOpen) {
+      return {
+        status: "CLOSED",
+        note: "Forex market is closed for the weekend (reopens Sunday 5:00 PM EST). Switch to Crypto (e.g. BTCUSDT) for 24/7 real-time streaming.",
+      };
+    }
+    return { status: "LIVE" };
+  }
+
+  if (cat === "upstox") {
+    // Indian market: IST is UTC+5:30. Trading hours: Mon-Fri 09:15 to 15:30 IST (03:45 to 10:00 UTC)
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      return {
+        status: "CLOSED",
+        note: "Indian markets (NSE/BSE) are closed for the weekend (reopens Monday 09:15 IST). Switch to Crypto (e.g. BTCUSDT) for 24/7 streaming.",
+      };
+    }
+    if (utcTotal < 3 * 60 + 45 || utcTotal > 10 * 60) {
+      return {
+        status: "CLOSED",
+        note: "Indian markets are outside standard trading hours (09:15 - 15:30 IST).",
+      };
+    }
+    return { status: "LIVE" };
+  }
+
+  // US stocks: Mon-Fri 09:30 to 16:00 EST (13:30 to 20:00 UTC)
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    return {
+      status: "CLOSED",
+      note: "US stock markets are closed for the weekend (reopens Monday 09:30 EST). Switch to Crypto (e.g. BTCUSDT) for 24/7 streaming.",
+    };
+  }
+  return { status: "LIVE" };
+}
+
 export class MarketStreamServer {
   private wss: WebSocketServer;
   private clients = new Map<WebSocket, Set<string>>();
@@ -33,7 +86,7 @@ export class MarketStreamServer {
 
   // Upstream connections
   private finnhubWs: WebSocket | null = null;
-  private binanceWs: WebSocket | null = null;
+  private binanceStreams = new Map<string, WebSocket>();
   private upstreamActive = false;
 
   constructor(server: Server) {
@@ -129,12 +182,17 @@ export class MarketStreamServer {
   private startSymbolStream(symbol: string) {
     const cat = detectProviderCategory(symbol);
 
-    // Fast polling loop (1.5 seconds) ensuring continuous updates
+    // Fast polling loop (1.0 second) ensuring continuous 1-second price engagement
     const timer = setInterval(async () => {
       await this.fetchAndBroadcast(symbol);
-    }, 1500);
+    }, 1000);
 
     this.pollIntervals.set(symbol, timer);
+
+    // If Crypto, connect directly to Binance trade stream for sub-second real-time trades
+    if (cat === "crypto") {
+      this.ensureBinanceWs(symbol);
+    }
 
     // If Finnhub US stock, also subscribe to Finnhub WS if active
     if (cat === "us_stock") {
@@ -148,12 +206,18 @@ export class MarketStreamServer {
       clearInterval(timer);
       this.pollIntervals.delete(symbol);
     }
+    const bws = this.binanceStreams.get(symbol);
+    if (bws) {
+      bws.close();
+      this.binanceStreams.delete(symbol);
+    }
     this.activeCandles.delete(symbol);
   }
 
   private async pushImmediateQuote(symbol: string, targetWs?: WebSocket) {
     try {
       const quote = await getQuote(symbol);
+      const mStatus = getMarketTradingStatus(symbol);
       const now = Date.now();
       const latency: LatencyReport = {
         symbol,
@@ -170,7 +234,17 @@ export class MarketStreamServer {
       const msg: RealtimeTickMessage = {
         type: "tick",
         symbol,
-        quote,
+        price: quote.price,
+        bid: quote.bid,
+        ask: quote.ask,
+        volume: quote.volume,
+        tickVolume: quote.tickVolume,
+        status: mStatus.status,
+        marketNote: mStatus.note,
+        quote: {
+          ...quote,
+          status: mStatus.status,
+        },
         candle,
         latency,
         timestamp: now,
@@ -185,6 +259,7 @@ export class MarketStreamServer {
     } catch {}
   }
 
+
   private async fetchAndBroadcast(symbol: string) {
     if (!this.symbolSubscriberCount.has(symbol)) return;
 
@@ -192,6 +267,7 @@ export class MarketStreamServer {
       const t0 = Date.now();
       const quote = await getQuote(symbol);
       const t1 = Date.now();
+      const mStatus = getMarketTradingStatus(symbol);
 
       const latency: LatencyReport = {
         symbol,
@@ -208,7 +284,17 @@ export class MarketStreamServer {
       const msg: RealtimeTickMessage = {
         type: "tick",
         symbol,
-        quote,
+        price: quote.price,
+        bid: quote.bid,
+        ask: quote.ask,
+        volume: quote.volume,
+        tickVolume: quote.tickVolume,
+        status: mStatus.status,
+        marketNote: mStatus.note,
+        quote: {
+          ...quote,
+          status: mStatus.status,
+        },
         candle,
         latency,
         timestamp: t1,
@@ -217,6 +303,67 @@ export class MarketStreamServer {
       this.broadcastToSubscribers(symbol, JSON.stringify(msg));
     } catch {}
   }
+
+  private ensureBinanceWs(symbol: string) {
+    if (this.binanceStreams.has(symbol)) return;
+    const clean = symbol.toLowerCase().replace(/[\/\s_-]/g, "");
+    const pair = clean.endsWith("usdt") ? clean : clean + "usdt";
+    const wsUrl = `wss://stream.binance.com:9443/ws/${pair}@trade`;
+
+    try {
+      const ws = new WebSocket(wsUrl);
+      this.binanceStreams.set(symbol, ws);
+
+      ws.on("message", (raw: any) => {
+        try {
+          const trade = JSON.parse(raw.toString());
+          if (!trade.p || !this.symbolSubscriberCount.has(symbol)) return;
+
+          const price = parseFloat(trade.p);
+          const qty = parseFloat(trade.q || "0");
+          const tradeTime = trade.T || Date.now();
+          const now = Date.now();
+
+          const candle = this.updateIncrementalCandle(symbol, price, qty);
+          const latency: LatencyReport = {
+            symbol,
+            source: "binance-ws",
+            providerTimestamp: tradeTime,
+            receivedTimestamp: now,
+            processingTimestamp: now,
+            feedLatencyMs: Math.max(0, now - tradeTime),
+            backendLatencyMs: 1,
+          };
+
+          const msg: RealtimeTickMessage = {
+            type: "tick",
+            symbol,
+            price,
+            volume: qty,
+            status: "LIVE",
+            marketNote: "Crypto trades 24/7 in real-time",
+            candle,
+            latency,
+            timestamp: now,
+          };
+
+          this.broadcastToSubscribers(symbol, JSON.stringify(msg));
+        } catch {}
+      });
+
+      ws.on("error", () => {
+        ws.close();
+      });
+
+      ws.on("close", () => {
+        this.binanceStreams.delete(symbol);
+        if (this.symbolSubscriberCount.has(symbol)) {
+          setTimeout(() => this.ensureBinanceWs(symbol), 3000);
+        }
+      });
+    } catch {}
+  }
+
 
   /**
    * Incremental Live Candle Engine

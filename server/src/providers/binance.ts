@@ -93,8 +93,39 @@ const RANGE_TO_KLINE: Record<string, { interval: string; limit: number }> = {
   MAX: { interval: "1M", limit: 200 },
 };
 
-export async function history(symbol: string, rangeKey: string): Promise<Candle[]> {
-  const { interval, limit } = RANGE_TO_KLINE[rangeKey] ?? RANGE_TO_KLINE["6M"];
+function mapBinanceInterval(interval: string): string {
+  const norm = interval.toLowerCase();
+  switch (norm) {
+    case "1m": return "1m";
+    case "3m": return "3m";
+    case "5m": return "5m";
+    case "15m": return "15m";
+    case "30m": return "30m";
+    case "45m": return "30m";
+    case "1h": return "1h";
+    case "2h": return "2h";
+    case "4h": return "4h";
+    case "1d": return "1d";
+    case "1w": return "1w";
+    case "1m_month":
+    case "1mo":
+    case "month": return "1M";
+    default:
+      if (norm === "1m") return "1m";
+      if (norm === "1h") return "1h";
+      return "1d";
+  }
+}
+
+export async function history(symbol: string, rangeKey = "6M", customInterval?: string): Promise<Candle[]> {
+  let interval = RANGE_TO_KLINE[rangeKey]?.interval ?? "1d";
+  let limit = RANGE_TO_KLINE[rangeKey]?.limit ?? 500;
+
+  if (customInterval) {
+    interval = mapBinanceInterval(customInterval);
+    limit = 500;
+  }
+
   const clean = symbol.toUpperCase().replace(/[\/\s_-]/g, "");
   const pair = clean.endsWith("USDT") ? clean : clean + "USDT";
   const res = await fetch(
@@ -111,3 +142,4 @@ export async function history(symbol: string, rangeKey: string): Promise<Candle[
     volume: +r[5],
   }));
 }
+

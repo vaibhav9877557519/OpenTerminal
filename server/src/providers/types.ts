@@ -1,6 +1,6 @@
 export type AssetType = "stock" | "index" | "forex" | "crypto" | "future" | "option";
 
-export type DataQualityStatus = "LIVE" | "DELAYED" | "INDICATIVE" | "STALE" | "OFFLINE" | "UNAVAILABLE";
+export type DataQualityStatus = "LIVE" | "DELAYED" | "INDICATIVE" | "STALE" | "OFFLINE" | "UNAVAILABLE" | "CLOSED";
 
 export interface NormalizedQuote {
   symbol: string;
@@ -115,8 +115,16 @@ export interface LatencyReport {
 export interface RealtimeTickMessage {
   type: "tick" | "candle_update" | "status" | "error" | "subscribed" | "unsubscribed" | "pong";
   symbol: string;
+  price?: number;
+  bid?: number | null;
+  ask?: number | null;
+  volume?: number | null;
+  tickVolume?: number | null;
+  status?: DataQualityStatus;
+  marketNote?: string;
   quote?: NormalizedQuote;
   candle?: NormalizedCandle;
   latency?: LatencyReport;
   timestamp: number;
 }
+

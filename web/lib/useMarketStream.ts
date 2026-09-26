@@ -10,7 +10,7 @@ export interface LatencyData {
   totalLatencyMs: number | null;
 }
 
-export type DataStatus = "LIVE" | "DELAYED" | "INDICATIVE" | "STALE" | "OFFLINE" | "UNAVAILABLE";
+export type DataStatus = "LIVE" | "DELAYED" | "INDICATIVE" | "STALE" | "OFFLINE" | "UNAVAILABLE" | "CLOSED";
 
 export interface StreamTick {
   symbol: string;
@@ -20,6 +20,7 @@ export interface StreamTick {
   volume: number | null;
   tickVolume?: number | null;
   timestamp: number;
+  marketNote?: string;
   candle: {
     time: number;
     open: number;
@@ -31,6 +32,11 @@ export interface StreamTick {
   };
   latency: LatencyData;
   status: DataStatus;
+}
+
+function isSameSymbol(s1?: string | null, s2?: string | null): boolean {
+  if (!s1 || !s2) return false;
+  return s1.toUpperCase().replace(/[\/\s_-]/g, "") === s2.toUpperCase().replace(/[\/\s_-]/g, "");
 }
 
 export function useMarketStream(symbol: string | null) {
@@ -88,7 +94,7 @@ export function useMarketStream(symbol: string | null) {
           const msg = JSON.parse(event.data);
           if (msg.type === "tick") {
             const rawTick = msg.tick || msg;
-            if (rawTick.symbol !== activeSymbolRef.current) return;
+            if (!isSameSymbol(rawTick.symbol, activeSymbolRef.current)) return;
 
             const tNow = Date.now();
             lastTickTimeRef.current = tNow;
@@ -118,6 +124,7 @@ export function useMarketStream(symbol: string | null) {
               volume: rawTick.volume ?? rawTick.quote?.volume ?? rawTick.candle?.volume ?? null,
               tickVolume: rawTick.tickVolume ?? rawTick.quote?.tickVolume ?? rawTick.candle?.tickVolume ?? null,
               timestamp: rawTick.timestamp || tNow,
+              marketNote: rawTick.marketNote,
               candle: rawTick.candle,
               latency: latReport,
               status: rawTick.quote?.status ?? rawTick.status ?? "LIVE",

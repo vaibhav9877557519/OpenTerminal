@@ -156,18 +156,18 @@ export async function getQuote(symbol: string): Promise<NormalizedQuote> {
 /**
  * Universal Historical Candles Resolver
  */
-export async function getHistory(symbol: string, rangeKey = "6M"): Promise<NormalizedCandle[]> {
+export async function getHistory(symbol: string, rangeKey = "6M", customInterval?: string): Promise<NormalizedCandle[]> {
   const cat = detectProviderCategory(symbol);
 
   switch (cat) {
     case "upstox":
-      return upstox.history(symbol, rangeKey);
+      return upstox.history(symbol, rangeKey, customInterval);
 
     case "forex":
-      return forex.history(symbol, rangeKey);
+      return forex.history(symbol, rangeKey, customInterval);
 
     case "crypto": {
-      const candles = await binance.history(symbol, rangeKey);
+      const candles = await binance.history(symbol, rangeKey, customInterval);
       return candles.map((c) => ({
         time: c.time,
         open: c.open,
@@ -183,15 +183,26 @@ export async function getHistory(symbol: string, rangeKey = "6M"): Promise<Norma
     case "indices": {
       const idx = indices.resolveIndex(symbol);
       if (idx && idx.source === "upstox") {
-        return upstox.history(idx.providerKey, rangeKey);
+        return upstox.history(idx.providerKey, rangeKey, customInterval);
       }
       return withFallback([
         ["nasdaq", () => nasdaq.history(idx?.providerKey ?? symbol, rangeKey)],
         [
           "yahoo",
           async () => {
-            const range = rangeKey === "1D" ? "1d" : rangeKey === "1Y" ? "1y" : "6mo";
-            const interval = rangeKey === "1D" ? "5m" : "1d";
+            let range = rangeKey === "1D" ? "1d" : rangeKey === "1Y" ? "1y" : "6mo";
+            let interval = rangeKey === "1D" ? "5m" : "1d";
+            if (customInterval) {
+              const ci = customInterval.toLowerCase();
+              if (ci === "1m") { range = "5d"; interval = "1m"; }
+              else if (ci === "5m") { range = "5d"; interval = "5m"; }
+              else if (ci === "15m") { range = "5d"; interval = "15m"; }
+              else if (ci === "30m") { range = "1mo"; interval = "30m"; }
+              else if (ci === "1h" || ci === "60m") { range = "3mo"; interval = "60m"; }
+              else if (ci === "1d") { range = "1y"; interval = "1d"; }
+              else if (ci === "1w") { range = "5y"; interval = "1wk"; }
+              else if (ci === "1mo" || ci === "1m_month") { range = "max"; interval = "1mo"; }
+            }
             const rows = await yahoo.history(idx?.providerKey ?? symbol, range, interval);
             return rows.map((r) => ({ ...r, source: "yahoo", assetType: "index" as const }));
           },
@@ -207,8 +218,19 @@ export async function getHistory(symbol: string, rangeKey = "6M"): Promise<Norma
         [
           "yahoo",
           async () => {
-            const range = rangeKey === "1D" ? "1d" : rangeKey === "1Y" ? "1y" : "6mo";
-            const interval = rangeKey === "1D" ? "5m" : "1d";
+            let range = rangeKey === "1D" ? "1d" : rangeKey === "1Y" ? "1y" : "6mo";
+            let interval = rangeKey === "1D" ? "5m" : "1d";
+            if (customInterval) {
+              const ci = customInterval.toLowerCase();
+              if (ci === "1m") { range = "5d"; interval = "1m"; }
+              else if (ci === "5m") { range = "5d"; interval = "5m"; }
+              else if (ci === "15m") { range = "5d"; interval = "15m"; }
+              else if (ci === "30m") { range = "1mo"; interval = "30m"; }
+              else if (ci === "1h" || ci === "60m") { range = "3mo"; interval = "60m"; }
+              else if (ci === "1d") { range = "1y"; interval = "1d"; }
+              else if (ci === "1w") { range = "5y"; interval = "1wk"; }
+              else if (ci === "1mo" || ci === "1m_month") { range = "max"; interval = "1mo"; }
+            }
             const rows = await yahoo.history(symbol, range, interval);
             return rows.map((r) => ({ ...r, source: "yahoo", assetType: "stock" as const }));
           },

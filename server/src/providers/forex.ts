@@ -149,29 +149,124 @@ export async function quote(rawSymbol: string): Promise<NormalizedQuote> {
 // Forex Historical Candles
 // -------------------------------------------------------------
 
-export async function history(rawSymbol: string, rangeKey = "6M"): Promise<NormalizedCandle[]> {
+function aggregateCandles(candles: NormalizedCandle[], bucketSeconds: number): NormalizedCandle[] {
+  if (candles.length === 0 || bucketSeconds <= 0) return candles;
+  const map = new Map<number, NormalizedCandle>();
+
+  for (const c of candles) {
+    const bucket = Math.floor(c.time / bucketSeconds) * bucketSeconds;
+    const existing = map.get(bucket);
+    if (!existing) {
+      map.set(bucket, {
+        time: bucket,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        tickVolume: c.tickVolume,
+        source: c.source,
+        assetType: c.assetType,
+      });
+    } else {
+      existing.high = Math.max(existing.high, c.high);
+      existing.low = Math.min(existing.low, c.low);
+      existing.close = c.close;
+      existing.volume = (existing.volume ?? 0) + (c.volume ?? 0);
+      existing.tickVolume = (existing.tickVolume ?? 0) + (c.tickVolume ?? 0);
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) => a.time - b.time);
+}
+
+export async function history(rawSymbol: string, rangeKey = "6M", customInterval?: string): Promise<NormalizedCandle[]> {
   const pair = normalizeForexSymbol(rawSymbol);
   if (!pair) throw new Error(`Unsupported forex pair: ${rawSymbol}`);
 
   return tracked("forex", async () => {
     let range = "6mo";
     let interval = "1d";
+    let aggregateSec = 0;
 
-    if (rangeKey === "1D") {
-      range = "1d";
-      interval = "5m";
-    } else if (rangeKey === "5D") {
-      range = "5d";
-      interval = "15m";
-    } else if (rangeKey === "1M") {
-      range = "1mo";
-      interval = "1h";
-    } else if (rangeKey === "1Y") {
-      range = "1y";
-      interval = "1d";
-    } else if (rangeKey === "5Y" || rangeKey === "MAX") {
-      range = "5y";
-      interval = "1wk";
+    if (customInterval) {
+      const ci = customInterval.toLowerCase();
+      switch (ci) {
+        case "1m":
+          range = rangeKey === "1D" ? "1d" : "5d";
+          interval = "1m";
+          break;
+        case "3m":
+          range = "5d";
+          interval = "1m";
+          aggregateSec = 180;
+          break;
+        case "5m":
+          range = rangeKey === "1D" ? "1d" : "5d";
+          interval = "5m";
+          break;
+        case "15m":
+          range = rangeKey === "1D" ? "1d" : "5d";
+          interval = "15m";
+          break;
+        case "30m":
+          range = "1mo";
+          interval = "30m";
+          break;
+        case "45m":
+          range = "1mo";
+          interval = "15m";
+          aggregateSec = 2700;
+          break;
+        case "1h":
+        case "60m":
+          range = rangeKey === "5D" ? "5d" : rangeKey === "1M" ? "1mo" : "3mo";
+          interval = "60m";
+          break;
+        case "2h":
+          range = "3mo";
+          interval = "60m";
+          aggregateSec = 7200;
+          break;
+        case "4h":
+          range = "6mo";
+          interval = "60m";
+          aggregateSec = 14400;
+          break;
+        case "1d":
+          range = rangeKey === "1Y" ? "1y" : rangeKey === "5Y" ? "5y" : "1y";
+          interval = "1d";
+          break;
+        case "1w":
+          range = "5y";
+          interval = "1wk";
+          break;
+        case "1m_month":
+        case "1mo":
+          range = "max";
+          interval = "1mo";
+          break;
+        default:
+          range = "1y";
+          interval = "1d";
+      }
+    } else {
+      if (rangeKey === "1D") {
+        range = "1d";
+        interval = "5m";
+      } else if (rangeKey === "5D") {
+        range = "5d";
+        interval = "15m";
+      } else if (rangeKey === "1M") {
+        range = "1mo";
+        interval = "1h";
+      } else if (rangeKey === "1Y") {
+        range = "1y";
+        interval = "1d";
+      } else if (rangeKey === "5Y" || rangeKey === "MAX") {
+        range = "5y";
+        interval = "1wk";
+      }
     }
 
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(pair.yahooSymbol)}?range=${range}&interval=${interval}`;
@@ -213,7 +308,8 @@ export async function history(rawSymbol: string, rangeKey = "6M"): Promise<Norma
       });
     }
 
-    return candles.sort((a, b) => a.time - b.time);
+    const sorted = candles.sort((a, b) => a.time - b.time);
+    return aggregateSec > 0 ? aggregateCandles(sorted, aggregateSec) : sorted;
   });
 }
 

@@ -142,6 +142,24 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
   // Real-time market stream hook
   const { tick, status: streamStatus, latency } = useMarketStream(symbol);
 
+  // Tick pulse / flash animation state for live 1-second price engagement
+  const [lastTickPrice, setLastTickPrice] = useState<number | null>(null);
+  const [tickFlash, setTickFlash] = useState<"up" | "down" | null>(null);
+
+  useEffect(() => {
+    if (!tick?.price) return;
+    if (lastTickPrice !== null) {
+      if (tick.price > lastTickPrice) {
+        setTickFlash("up");
+      } else if (tick.price < lastTickPrice) {
+        setTickFlash("down");
+      }
+      const t = setTimeout(() => setTickFlash(null), 600);
+      return () => clearTimeout(t);
+    }
+    setLastTickPrice(tick.price);
+  }, [tick?.price, tick?.timestamp]);
+
   // Load persistent drawings, layouts, and alerts on mount / symbol change
   useEffect(() => {
     setDrawings(loadDrawings(symbol));
@@ -166,6 +184,24 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
     }
   }, [rawCandles]);
 
+function getTimeframeSeconds(tf: string): number {
+  switch (tf) {
+    case "1m": return 60;
+    case "3m": return 180;
+    case "5m": return 300;
+    case "15m": return 900;
+    case "30m": return 1800;
+    case "45m": return 2700;
+    case "1H": return 3600;
+    case "2H": return 7200;
+    case "4H": return 14400;
+    case "1D": return 86400;
+    case "1W": return 604800;
+    case "1M": return 2592000;
+    default: return 60;
+  }
+}
+
   // Real-time tick update: incremental candle update without full reload
   useEffect(() => {
     if (!tick || candles.length === 0) return;
@@ -189,17 +225,21 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
       }
     });
 
+    const tfSec = getTimeframeSeconds(timeframe);
+    const tickSec = Math.floor((tick.timestamp || Date.now()) / 1000);
+    const currentBucket = Math.floor(tickSec / tfSec) * tfSec;
+
     const lastIdx = candles.length - 1;
     const last = candles[lastIdx];
 
-    // If tick is in same bar or within 60s
-    if (tick.timestamp / 1000 - last.time < 300) {
+    // If tick is in same bar or within timeframe bucket
+    if (last.time === currentBucket || Math.abs(tickSec - last.time) < tfSec) {
       const updated: Candle = {
         ...last,
         high: Math.max(last.high, tick.price),
         low: Math.min(last.low, tick.price),
         close: tick.price,
-        volume: tick.volume ?? last.volume,
+        volume: (tick.volume ?? last.volume) + 1,
       };
 
       setCandles((prev) => {
@@ -228,6 +268,40 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
           time: ts(updated.time),
           value: updated.volume,
           color: updated.close >= updated.open ? "rgba(0,200,83,0.4)" : "rgba(255,61,61,0.4)",
+        });
+      }
+    } else if (tickSec > last.time) {
+      // Append a new bar for the new timeframe bucket
+      const newBar: Candle = {
+        time: currentBucket,
+        open: tick.price,
+        high: tick.price,
+        low: tick.price,
+        close: tick.price,
+        volume: tick.volume ?? 1,
+      };
+
+      setCandles((prev) => [...prev, newBar]);
+
+      if (mainSeriesRef.current) {
+        if (chartType === "candles" || chartType === "bars") {
+          mainSeriesRef.current.update({
+            time: ts(newBar.time),
+            open: newBar.open,
+            high: newBar.high,
+            low: newBar.low,
+            close: newBar.close,
+          });
+        } else {
+          mainSeriesRef.current.update({ time: ts(newBar.time), value: newBar.close });
+        }
+      }
+
+      if (volSeriesRef.current) {
+        volSeriesRef.current.update({
+          time: ts(newBar.time),
+          value: newBar.volume,
+          color: "rgba(0,200,83,0.4)",
         });
       }
     }
@@ -655,28 +729,48 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
       <div className="flex items-center justify-between px-2 py-1 bg-[#111111] border-b border-[#262626] text-[11px] flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <span className="font-bold text-[#ff9900] text-[12px]">{symbol}</span>
-          {legend && (
-            <>
-              <span className="text-[13px] font-semibold">{fmt(legend.close)}</span>
-              <span className={`text-[11px] ${legend.close >= legend.open ? "up" : "down"}`}>
-                {legend.close >= legend.open ? "+" : ""}
-                {fmt(legend.close - legend.open)} (
-                {(((legend.close - legend.open) / (legend.open || 1)) * 100).toFixed(2)}%)
-              </span>
-            </>
-          )}
+          {(() => {
+            const lastBar = activeCandles && activeCandles.length > 0 ? activeCandles[activeCandles.length - 1] : null;
+            const displayPrice = legend?.close ?? tick?.price ?? lastBar?.close ?? null;
+            const displayOpen = legend?.open ?? lastBar?.open ?? displayPrice;
+            const priceChange = displayPrice !== null && displayOpen !== null ? displayPrice - displayOpen : 0;
+            const priceChangePct = displayOpen && priceChange !== null && displayOpen > 0 ? (priceChange / displayOpen) * 100 : 0;
+
+            if (displayPrice === null) return null;
+
+            return (
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`text-[13px] font-semibold transition-colors duration-200 px-1 py-0.5 rounded ${
+                    tickFlash === "up"
+                      ? "bg-[#00c853]/30 text-[#00e676]"
+                      : tickFlash === "down"
+                      ? "bg-[#ff3d3d]/30 text-[#ff5252]"
+                      : "text-white"
+                  }`}
+                >
+                  {fmt(displayPrice)}
+                </span>
+                <span className={`text-[11px] font-medium ${priceChange >= 0 ? "text-[#00c853]" : "text-[#ff3d3d]"}`}>
+                  {priceChange >= 0 ? "+" : ""}{fmt(priceChange)} ({priceChangePct.toFixed(2)}%)
+                </span>
+              </div>
+            );
+          })()}
 
           {/* Status Badge */}
           <span
             className={`px-1.5 py-0.5 rounded text-[10px] font-semibold tracking-wider ${
               streamStatus === "LIVE"
                 ? "bg-[#00c853]/20 text-[#00c853] border border-[#00c853]/40"
+                : streamStatus === "CLOSED"
+                ? "bg-[#ff9900]/20 text-[#ff9900] border border-[#ff9900]/40"
                 : streamStatus === "STALE"
                 ? "bg-[#ff9900]/20 text-[#ff9900] border border-[#ff9900]/40"
                 : "bg-[#ff3d3d]/20 text-[#ff3d3d] border border-[#ff3d3d]/40"
             }`}
           >
-            ● {streamStatus}
+            ● {streamStatus === "CLOSED" ? "MARKET CLOSED (WEEKEND)" : streamStatus}
           </span>
         </div>
 
@@ -840,6 +934,18 @@ export default function ChartWidget({ widget }: { widget: WidgetInstance }) {
           CLEAR
         </button>
       </div>
+
+      {/* Weekend / Market Closed Informational Notice */}
+      {streamStatus === "CLOSED" && (
+        <div className="bg-[#1c1602] border-b border-[#5c4000] px-3 py-1 text-[10px] text-[#ffcc00] flex items-center justify-between flex-wrap gap-2">
+          <span>
+            ℹ️ {tick?.marketNote ?? "This market is closed for the weekend (Forex & Equities reopen Sunday evening / Monday). Quotes remain frozen at the Friday market close."}
+          </span>
+          <span className="font-semibold text-white">
+            For 24/7 sub-second live streaming right now, switch to <strong>BTCUSDT</strong> or <strong>ETHUSDT</strong>.
+          </span>
+        </div>
+      )}
 
       {/* MTF summary row if active */}
       {showMTF && mtfSummaries.length > 0 && (

@@ -312,24 +312,16 @@ marketRouter.get(["/history/:symbol", "/history/*"], async (req, res) => {
   const interval = req.query.interval ? String(req.query.interval) : undefined;
   try {
     const data = await cached(`history:${symbol}:${rangeKey}:${interval ?? "default"}`, HISTORY_TTL, async () => {
-      const category = router.detectProviderCategory(symbol);
-      if (category !== "us_stock" || symbol.includes("^") || symbol.includes("=") || isVix(symbol)) {
-        const normCandles = await router.getHistory(symbol, rangeKey);
-        return normCandles.map((c) => ({
-          time: c.time,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-          volume: c.volume,
-          tickVolume: c.tickVolume,
-        }));
-      }
-      return withFallback([
-        ["nasdaq", () => nasdaq.history(symbol, rangeKey)],
-        ["yahoo", () => yahoo.history(symbol, yahooRange(rangeKey).range, yahooRange(rangeKey).interval)],
-        ["stooq", () => stooq.history(symbol)],
-      ]);
+      const normCandles = await router.getHistory(symbol, rangeKey, interval);
+      return normCandles.map((c) => ({
+        time: c.time,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        tickVolume: c.tickVolume,
+      }));
     });
     if (!Array.isArray(data) || data.length === 0) throw new Error("empty history from all providers");
     res.json(data);
